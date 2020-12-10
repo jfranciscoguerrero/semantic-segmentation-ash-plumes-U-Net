@@ -1,129 +1,143 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+##import libreries
 
-# C extensions
-*.so
+%matplotlib inline
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+from keras.models import * 
+from keras.layers import *
+from keras.optimizers import *
+from keras.callbacks import ModelCheckpoint, LearningRateScheduler
+from keras import backend as keras
+from segmentation_models import Unet
+from segmentation_models.metrics import iou_score
+from PIL import Image
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
+## import the files roots
+path_train_img ='.../train_tile/imagenes/'
+path_train_mask='...train_tile/mascaras/'
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+path_val_img ='.../val_tile/imagenes/'
+path_val_mask='.../val_tile/mascaras/'
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
 
-# Translations
-*.mo
-*.pot
+## feed dataset with datagenerator
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
+from keras.preprocessing.image import ImageDataGenerator
 
-# Flask stuff:
-instance/
-.webassets-cache
+seed=500
 
-# Scrapy stuff:
-.scrapy
+# Normalize
 
-# Sphinx documentation
-docs/_build/
+image_datagen= ImageDataGenerator(rescale=1./255)
+mask_datagen= ImageDataGenerator(rescale=1./255)
 
-# PyBuilder
-target/
+# create the datagenerator for train images
 
-# Jupyter Notebook
-.ipynb_checkpoints
+img_train= image_datagen.flow_from_directory(path_train_img,
+                                            target_size=(768,768),
+                                            batch_size=32,
+                                            class_mode=None,
+                                            seed=seed)
 
-# IPython
-profile_default/
-ipython_config.py
+mask_train= mask_datagen.flow_from_directory(path_train_mask,
+                                            target_size=(768,768),
+                                            batch_size=32,
+                                            class_mode=None,
+                                            color_mode='grayscale',
+                                            seed=seed)
 
-# pyenv
-.python-version
+train_gen= zip(img_train, mask_train)
 
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
+## create the datagenerator for test images
 
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow
-__pypackages__/
+val_image_datagen = ImageDataGenerator(rescale=1./255)
+val_mask_datagen = ImageDataGenerator(rescale=1./255)
 
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
+img_val = val_image_datagen.flow_from_directory(path_val_img,
+                                           target_size=(768,768),
+                                           class_mode=None,
+                                           shuffle=False)
 
-# SageMath parsed files
-*.sage.py
+mask_val = val_mask_datagen.flow_from_directory(path_val_mask,
+                                            target_size=(768,768),
+                                            class_mode=None,
+                                            color_mode='grayscale',
+                                            shuffle=False)
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+val_gen = zip(img_val, mask_val)
 
-# Spyder project settings
-.spyderproject
-.spyproject
+##build the model
 
-# Rope project settings
-.ropeproject
+def etna_unet(pretrained_weights=None, input_size=(768,768,3)):
+    inputs = Input(input_size)
+    conv1 = Conv2D(16,3, activation='relu', padding='same', kernel_initializer='he_normal')(inputs)
+    conv1 = Conv2D(16,3, activation='relu', padding='same', kernel_initializer='he_normal')(conv1)
+    pool1 = MaxPooling2D(pool_size=(2,2))(conv1)
+    
+    conv2 = Conv2D(32,3, activation='relu', padding='same', kernel_initializer='he_normal')(pool1)
+    conv2 = Conv2D(32,3, activation='relu', padding='same', kernel_initializer='he_normal')(conv2)
+    pool2 = MaxPooling2D(pool_size=(2,2))(conv2)
+    
+    conv3 = Conv2D(64,3, activation='relu', padding='same', kernel_initializer='he_normal')(pool2)
+    conv3 = Conv2D(64,3, activation='relu', padding='same', kernel_initializer='he_normal')(conv3)
+    pool3 = MaxPooling2D(pool_size=(2,2))(conv3)
+    
+    conv4 = Conv2D(128,3, activation='relu', padding='same', kernel_initializer='he_normal')(pool3)
+    conv4 = Conv2D(128,3, activation='relu', padding='same', kernel_initializer='he_normal')(conv4)
+    pool4 = MaxPooling2D(pool_size=(2,2))(conv4)
+    
+    conv5 = Conv2D(256,3, activation='relu', padding='same', kernel_initializer='he_normal')(pool4)
+    conv5 = Conv2D(256,3, activation='relu', padding='same', kernel_initializer='he_normal')(conv5)
+    pool5 = MaxPooling2D(pool_size=(2,2))(conv5)
+    
+    conv6 = Conv2D(512,3, activation='relu', padding='same', kernel_initializer='he_normal')(pool5)
+    conv6 = Conv2D(512,3, activation='relu', padding='same', kernel_initializer='he_normal')(conv6)
+    drop6 = Dropout(0.5)(conv6)
+    
+    '''DECODER'''
+    
+    up7= Conv2D(256,2, activation='relu', padding='same', kernel_initializer='he_normal')(UpSampling2D(size=(2,2))(drop6))
+    merge7= concatenate([conv5,up7],axis=3)
+    conv7= Conv2D(256,3, activation='relu', padding='same', kernel_initializer='he_normal')(merge7)
+    conv7= Conv2D(256,3, activation='relu', padding='same', kernel_initializer='he_normal')(conv7)
 
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
+    up8= Conv2D(128,2, activation='relu', padding='same', kernel_initializer='he_normal')(UpSampling2D(size=(2,2))(conv7))
+    merge8= concatenate([conv4,up8],axis=3)
+    conv8= Conv2D(128,3, activation='relu', padding='same', kernel_initializer='he_normal')(merge8)
+    conv8= Conv2D(128,3, activation='relu', padding='same', kernel_initializer='he_normal')(conv8)
+    
+    up9= Conv2D(64,2, activation='relu', padding='same', kernel_initializer='he_normal')(UpSampling2D(size=(2,2))(conv8))
+    merge9= concatenate([conv3,up9],axis=3)
+    conv9= Conv2D(64,3, activation='relu', padding='same', kernel_initializer='he_normal')(merge9)
+    conv9= Conv2D(64,3, activation='relu', padding='same', kernel_initializer='he_normal')(conv9)
+    
+    up10= Conv2D(32,2, activation='relu', padding='same', kernel_initializer='he_normal')(UpSampling2D(size=(2,2))(conv9))
+    merge10= concatenate([conv2,up10],axis=3)
+    conv10= Conv2D(32,3, activation='relu', padding='same', kernel_initializer='he_normal')(merge10)
+    conv10= Conv2D(32,3, activation='relu', padding='same', kernel_initializer='he_normal')(conv10)
+    
+    up11= Conv2D(16,2, activation='relu', padding='same', kernel_initializer='he_normal')(UpSampling2D(size=(2,2))(conv10))
+    merge11= concatenate([conv1,up11],axis=3)
+    conv11= Conv2D(16,3, activation='relu', padding='same', kernel_initializer='he_normal')(merge11)
+    conv11= Conv2D(16,3, activation='relu', padding='same', kernel_initializer='he_normal')(conv11)
+    
+    
+    conv11= Conv2D(2,3, activation='relu', padding='same', kernel_initializer='he_normal')(conv11)
+    conv12= Conv2D(1,1, activation='sigmoid')(conv11)
+    
+    model = Model(input=inputs,outputs=conv12)
+    model.compile(optimizer=Adam(lr=1e-4), loss='binary_crossentropy', metrics=['accuracy',iou_score])
+    ## model.compile(optimizer=Adam(lr=1e-4), loss='binary_crossentropy', metrics=['accuracy'])
+    
+    return model
+    
+## create training parametres 
+hist = unet_model.fit_generator(train_gen,
+                                steps_per_epoch=21,
+                                epochs=35,
+                                validation_data=val_gen,
+                                validation_steps=5
+                               )
+    
